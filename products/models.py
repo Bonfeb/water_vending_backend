@@ -1,6 +1,6 @@
 from django.db import models
+from django.conf import settings
 import uuid
-from users.models import *
 
 
 class Bottle(models.Model):
@@ -10,15 +10,12 @@ class Bottle(models.Model):
         (20, '20 Litres'),
     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bottles')
     size = models.IntegerField(choices=SIZE_CHOICES)
     purchase_date = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
 
-
     def __str__(self):
-        return f"{self.size}L"
-
+        return f"{self.size} - {self.id}"
 
 class Pricing(models.Model):
     size = models.IntegerField(choices=Bottle.SIZE_CHOICES, unique=True)
@@ -26,4 +23,7 @@ class Pricing(models.Model):
     refill_price = models.DecimalField(max_digits=10, decimal_places=2)
 
     def __str__(self):
-        return f"{self.size}L - Purchase: KES {self.purchase_price}, Refill: KES {self.refill_price}"
+        return (
+            f"{self.get_size_display()} - "
+            f"Purchase: KES {self.purchase_price}, Refill: KES {self.refill_price}"
+        )

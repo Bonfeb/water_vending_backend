@@ -2,6 +2,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.shortcuts import get_object_or_404
+from django.db.models import Sum, Q
 from django.db import transaction
 from decimal import Decimal
 import requests
@@ -12,6 +13,7 @@ from payments.models import *
 from payments.serializers import *
 from orders.models import *
 from core.notifications import *
+from core.permissions import *
 from users.models import *
 
 
@@ -127,7 +129,6 @@ class InitiateSTKPushView(APIView):
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-
 class MPesaCallbackView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -186,7 +187,6 @@ class MPesaCallbackView(APIView):
         except Exception as e:
             return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
 
-
 class PaymentStatusView(APIView):
     permission_classes = [permissions.AllowAny]
     
@@ -203,3 +203,42 @@ class PaymentStatusView(APIView):
             })
         except Payment.DoesNotExist:
             return Response({'error': 'No payment found'}, status=status.HTTP_404_NOT_FOUND)
+        
+class AdminPaymentListView(APIView):
+    permission_classes = [IsStaffMember]
+
+    def get(self, request):
+        payments = Payment.objects.select_related('order', 'order__user').order_by('-created_at')
+
+        # Optional filters
+        status_filter = request.query_params.get('status')
+        search = request.query_params.get('search')
+
+        if status_filter:
+            payments = payments.filter(status=status_filter)
+
+        if search:
+            payments = payments.filter(
+                Q(mpesa_receipt__icontains=search) |
+                Q(order__user__phone_number__icontains=search) |
+                Q(order__user__first_name__icontains=search) |
+                Q(order__user__last_name__icontains=search) |
+                Q(order__guest_phone__icontains=search) |
+                Q(order__guest_name__icontains=search)
+            )
+
+        total_amount = payments.aggregate(total=Sum('amount'))['total'] or 0
+        completed_amount = payments.filter(status='completed').aggregate(total=Sum('amount'))['total'] or 0
+        pending_amount = payments.filter(status='pending').aggregate(total=Sum('amount'))['total'] or 0
+        failed_amount = payments.filter(status='failed').aggregate(total=Sum('amount'))['total'] or 0
+
+        serializer = PaymentSerializer(payments, many=True)
+
+        return Response({
+            'count': payments.count(),
+            'total_amount': str(total_amount),
+            'completed_amount': str(completed_amount),
+            'pending_amount': str(pending_amount),
+            'failed_amount': str(failed_amount),
+            'results': serializer.data
+        })

@@ -11,20 +11,12 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY')
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG')
 
 AUTH_USER_MODEL = 'users.User'
-
-ALLOWED_HOSTS = [
-    'http://localhost:8000',
-    'http://127.0.0.1:8000',
-]
-
-
-# Application definition
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -39,7 +31,6 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'users',
     'orders',
-    'riders',
     'products',
     'payments',
 ]
@@ -57,20 +48,41 @@ MIDDLEWARE = [
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
 }
 
-ALLOWED_HOSTS = ['*']
-CORS_ALLOW_ALL_ORIGINS = True
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+hosts = os.getenv("ALLOWED_HOSTS")
+
+if not hosts:
+    raise RuntimeError("Allowed_hosts environment variable not set")
+
+ALLOWED_HOSTS = [host.strip() for host in hosts.split(",")]
+
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOW_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-]
+
+cors_origins = os.getenv("CORS_ALLOWED_ORIGINS")
+
+if not cors_origins:
+    raise RuntimeError("CORS_ALLOWED_ORIGINS environment variable not set")
+
+CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_origins.split(",")]
+
+csrf_origins = os.getenv("CSRF_TRUSTED_ORIGINS")
+
+if not csrf_origins:
+    raise RuntimeError("CSRF_TRUSTED_ORIGINS environment variables not set")
+
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in csrf_origins.split(",")]
 
 ASGI_APPLICATION = 'aqua_flow.asgi.application'
 

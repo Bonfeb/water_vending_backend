@@ -1,15 +1,21 @@
-from rest_framework import permissions
+from rest_framework.permissions import BasePermission
 
-class IsRider(permissions.BasePermission):
+
+class IsStaffMember(BasePermission):
+    """Allow access only to users in the 'staff' group."""
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_rider
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.groups.filter(name='staff').exists()
+        )
 
 
-class IsAdmin(permissions.BasePermission):
+class IsCustomer(BasePermission):
+    """Allow access only to users in the 'customers' group."""
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.is_admin
-
-
-class IsOwnerOrAdmin(permissions.BasePermission):
-    def has_object_permission(self, request, view, obj):
-        return obj.user == request.user or request.user.is_admin
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.groups.filter(name='customers').exists()
+        )
