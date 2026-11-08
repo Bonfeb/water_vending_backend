@@ -62,7 +62,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        user = authenticate(username=phone_number, password=password)
+        user = authenticate(request, phone_number=phone_number, password=password)
         if not user:
             return Response(
                 {'error': 'Invalid credentials'},
