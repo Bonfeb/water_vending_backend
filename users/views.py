@@ -55,21 +55,26 @@ class LoginView(APIView):
         password = serializer.validated_data['password']
 
         try:
-            user = User.objects.get(request, username=phone_number)
+            user = User.objects.get(phone_number=phone_number)
         except User.DoesNotExist:
             return Response(
                 {'error': 'Invalid credentials'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        user = authenticate(request, phone_number=phone_number, password=password)
-        if not user:
+        authenticated_user = authenticate(
+            request,
+            username=user.username,
+            password=password
+        )
+        
+        if not authenticated_user:
             return Response(
                 {'error': 'Invalid credentials'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        if not user.is_active:
+        if not authenticated_user.is_active:
             return Response(
                 {'error': 'Account is disabled'},
                 status=status.HTTP_401_UNAUTHORIZED
