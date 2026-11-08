@@ -55,7 +55,7 @@ class LoginView(APIView):
         password = serializer.validated_data['password']
 
         try:
-            user = User.objects.get(phone_number=phone_number)
+            user = User.objects.get(request, username=phone_number)
         except User.DoesNotExist:
             return Response(
                 {'error': 'Invalid credentials'},
