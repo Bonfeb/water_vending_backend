@@ -8,6 +8,6 @@ urlpatterns = [
     path('order/<int:pk>/', OrderDetailView.as_view(), name='order-detail'),
     
     # Staff
-    path('admin/orders/', AdminOrderListView.as_view(), name='admin-order-list'),
-    path('admin/orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
+    path('orders/', AdminOrderListView.as_view(), name='admin-order-list'),
+    path('orders/<int:pk>/', AdminOrderDetailView.as_view(), name='admin-order-detail'),
 ]
