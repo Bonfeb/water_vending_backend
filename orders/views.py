@@ -1,6 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework.throttling import AnonRateThrottle
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Q
@@ -11,16 +12,32 @@ from core.permissions import IsStaffMember
 from core.utils import standardize_phone_number
 from users.models import User
 
+
+class GuestAccessThrottle(AnonRateThrottle):
+    """Limits phone-number guessing by unauthenticated users."""
+    scope = 'guest_access'
+
+
+def is_staff_user(user):
+    return user.is_authenticated and user.groups.filter(name='staff').exists()
+
+
 class OrderListCreateView(APIView):
+    # Guests may create orders; listing is guarded inside get()
+    permission_classes = [permissions.AllowAny]
+
     def get(self, request):
         if not request.user.is_authenticated:
             return Response(
                 {'error': 'Authentication required to view your orders'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-        orders = Order.objects.filter(user=request.user).order_by('-created_at')
-        serializer = OrderSerializer(orders, many=True)
-        return Response(serializer.data)
+        orders = (
+            Order.objects.filter(user=request.user)
+            .select_related('user')
+            .order_by('-created_at')
+        )
+        return Response(OrderSerializer(orders, many=True).data)
 
     @transaction.atomic
     def post(self, request):
@@ -46,6 +63,20 @@ class OrderListCreateView(APIView):
         )
         total = unit_price * data['quantity']
 
+        # Check and lock stock BEFORE creating the order
+        bottles = []
+        if data['order_type'] == 'purchase':
+            bottles = list(
+                Bottle.objects.select_for_update()
+                .filter(size=data['size'], is_active=True)[:data['quantity']]
+            )
+            if len(bottles) < data['quantity']:
+                return Response(
+                    {'error': f'Not enough {data["size"]}L bottles in stock '
+                              f'({len(bottles)} available).'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
         user = request.user if request.user.is_authenticated else None
 
         order = Order.objects.create(
@@ -62,36 +93,46 @@ class OrderListCreateView(APIView):
             status='pending'
         )
 
-        if data['order_type'] == 'purchase':
-            bottles_to_reserve = list(Bottle.objects.filter(size=data['size'], is_active=True))[:data['quantity']]
-
-            if len(bottles_to_reserve) < data['quantity']:
-                raise ValueError("No enough bottles in stock")
-            for bottle in bottles_to_reserve:
-                bottle.is_active = False
-                bottle.save()
+        if bottles:
+            Bottle.objects.filter(
+                pk__in=[b.pk for b in bottles]
+            ).update(is_active=False)
 
         return Response({
             'order': OrderSerializer(order).data,
             'message': 'Order created successfully. Proceed to payment.'
         }, status=status.HTTP_201_CREATED)
 
+
 class OrderDetailView(APIView):
+    permission_classes = [permissions.AllowAny]   # access is checked in _authorize
+    throttle_classes = [GuestAccessThrottle]      # only throttles unauthenticated requests
+
+    @staticmethod
+    def _guest_phone(request, data):
+        for source in (data, request.query_params):
+            if source:
+                raw = source.get('guest_phone_verify') or source.get('phone')
+                if raw:
+                    return raw
+        return None
+
     def _authorize(self, request, order, data=None):
-        if request.user.is_authenticated:
-            if request.user.groups.filter(name='staff').exists():
-                return True
-            return order.user == request.user
-        else:
-            source = data if data else request.query_params
-            phone = source.get('guest_phone_verify') or source.get('phone')
-            if phone:
-                try:
-                    phone = standardize_phone_number(phone)
-                except ValueError:
-                    return False
-                return order.guest_phone == phone
+        user = request.user
+        if user.is_authenticated:
+            return is_staff_user(user) or order.user_id == user.id
+
+        # Guests can only access guest orders, verified by phone number
+        if order.user_id is not None or not order.guest_phone:
             return False
+        raw = self._guest_phone(request, data)
+        if not raw:
+            return False
+        try:
+            phone = standardize_phone_number(raw)
+        except ValueError:
+            return False
+        return order.guest_phone == phone
 
     def get(self, request, pk):
         order = get_object_or_404(Order, pk=pk)
@@ -101,9 +142,7 @@ class OrderDetailView(APIView):
                 {'error': 'Permission denied. Provide phone verification for guest orders.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-
-        serializer = OrderSerializer(order)
-        return Response(serializer.data)
+        return Response(OrderSerializer(order).data)
 
     def put(self, request, pk):
         order = get_object_or_404(Order, pk=pk)
@@ -114,10 +153,7 @@ class OrderDetailView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        is_staff = (
-            request.user.is_authenticated
-            and request.user.groups.filter(name='staff').exists()
-        )
+        is_staff = is_staff_user(request.user)
 
         if order.status != 'pending' and not is_staff:
             return Response(
@@ -150,7 +186,12 @@ class OrderDetailView(APIView):
             except Pricing.DoesNotExist:
                 pass
 
-        for field in ['delivery_address', 'delivery_notes', 'guest_name', 'guest_phone']:
+        # guest_phone is NOT editable here: it is the guest's proof of ownership
+        editable = ['delivery_address', 'delivery_notes']
+        if order.user_id is None:
+            editable.append('guest_name')
+
+        for field in editable:
             if field in data:
                 setattr(order, field, data[field])
 
@@ -180,8 +221,10 @@ class OrderDetailView(APIView):
         order.save()
         return Response({'message': 'Order cancelled successfully'})
 
+
 class GuestOrderLookupView(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [GuestAccessThrottle]
 
     def post(self, request):
         serializer = GuestOrderLookupSerializer(data=request.data)
@@ -198,8 +241,9 @@ class GuestOrderLookupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        # Guest orders ONLY. Registered users' orders require logging in.
         orders = Order.objects.filter(
-            Q(guest_phone=phone) | Q(user__phone_number=phone)
+            user__isnull=True, guest_phone=phone
         ).order_by('-created_at')
 
         if not orders.exists():
@@ -208,8 +252,7 @@ class GuestOrderLookupView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        serializer = OrderSerializer(orders, many=True)
-        return Response(serializer.data)
+        return Response(OrderSerializer(orders, many=True).data)
 
 class AdminOrderListView(APIView):
     permission_classes = [IsStaffMember]

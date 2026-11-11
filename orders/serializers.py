@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from orders.models import Order
+from products.models import Bottle
 from users.serializers import UserSerializer
 from products.serializers import BottleSerializer
 from core.utils import standardize_phone_number
@@ -35,6 +36,8 @@ class OrderCreateSerializer(serializers.Serializer):
     )
     delivery_address = serializers.CharField()
     delivery_notes = serializers.CharField(required=False, allow_blank=True, default='')
+    # Optional saved bottle (logged-in users only)
+    bottle_id = serializers.IntegerField(required=False, allow_null=True)
     # Guest-only fields
     guest_name = serializers.CharField(
         max_length=100, required=False, allow_blank=True
@@ -45,9 +48,10 @@ class OrderCreateSerializer(serializers.Serializer):
 
     def validate(self, data):
         request = self.context.get('request')
-        user = request.user if request.user.is_authenticated else None
+        user = request.user if request and request.user.is_authenticated else None
+        bottle_id = data.get('bottle_id')
 
-        # Guest users must provide name and phone
+        # ── Guests: name + phone required, no saved bottles ──
         if not user:
             if not data.get('guest_name', '').strip():
                 raise serializers.ValidationError({
@@ -63,30 +67,33 @@ class OrderCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError({
                     'guest_phone': 'Invalid phone number. Use 0712345678 or +254712345678'
                 })
+            if bottle_id:
+                raise serializers.ValidationError({
+                    'bottle_id': 'Sign in to use a saved bottle.'
+                })
 
+        # ── Stock check (the view re-checks under a row lock) ──
         if data['order_type'] == 'purchase':
             in_stock = Bottle.objects.filter(size=data['size'], is_active=True).count()
             if in_stock < data['quantity']:
-                raise serializers.ValidationError({'quantity': f"Only {in_stock} bottles of {data['size']}L in stock available"})
-        # Validate bottle_id if provided (optional for all types)
-        if data.get('bottle_id'):
-            try:
-                from products.models import Bottle
-                if user:
-                    bottle = Bottle.objects.get(id=data['bottle_id'], user=user)
-                else:
-                    bottle = Bottle.objects.get(id=data['bottle_id'])
+                raise serializers.ValidationError({
+                    'quantity': f"Only {in_stock} bottles of {data['size']}L in stock available"
+                })
 
-                if bottle.size != data['size']:
-                    raise serializers.ValidationError({
-                        'size': f'Bottle size mismatch. The bottle is {bottle.get_size_display()}.'
-                    })
-            except Exception:
+        # ── Saved bottle (logged-in users) ──
+        if bottle_id:
+            try:
+                bottle = Bottle.objects.get(id=bottle_id, user=user)
+            except Bottle.DoesNotExist:
                 raise serializers.ValidationError({
                     'bottle_id': 'Invalid bottle selected.'
                 })
+            if bottle.size != data['size']:
+                raise serializers.ValidationError({
+                    'size': f'Bottle size mismatch. The bottle is {bottle.get_size_display()}.'
+                })
 
-        # Standardize payment_phone if provided
+        # ── Standardize payment phone ──
         if data.get('payment_phone'):
             try:
                 data['payment_phone'] = standardize_phone_number(data['payment_phone'])
@@ -99,7 +106,7 @@ class OrderCreateSerializer(serializers.Serializer):
 
 
 class OrderUpdateSerializer(serializers.Serializer):
-    """For customers to update their pending orders."""
+    """For customers/guests to update their pending orders."""
     delivery_address = serializers.CharField(required=False)
     delivery_notes = serializers.CharField(required=False, allow_blank=True)
     size = serializers.IntegerField(required=False)
@@ -107,10 +114,7 @@ class OrderUpdateSerializer(serializers.Serializer):
     guest_name = serializers.CharField(
         max_length=100, required=False, allow_blank=True
     )
-    guest_phone = serializers.CharField(
-        max_length=20, required=False, allow_blank=True
-    )
-    # Phone verification for guest updates
+    # Phone verification for guest updates (guest_phone itself is NOT editable)
     guest_phone_verify = serializers.CharField(
         max_length=20, required=False, allow_blank=True
     )
